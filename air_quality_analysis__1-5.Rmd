@@ -1,0 +1,234 @@
+---
+title: "Comparing Air Quality Trends: Champaign County, IL vs. India"
+author: "Suchita Bhandari"
+date: "2025-05-08"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+    theme: flatly
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+library(ggplot2)
+library(tidyr)
+library(lubridate)
+library(dplyr)
+library(readr)
+library(readxl)
+library(janitor)
+library(plotly)
+library(gganimate)
+library(viridis)
+library(patchwork)
+```
+
+## Project Overview
+
+Air quality is a major factor in evaluating quality of life in a given location.
+I moved to the US from India at age four and visited again last year; I also visited
+family friends near Champaign County, Illinois. This project compares air quality
+in these two locations and examines how specific pollutants (PM2.5, PM10) relate
+to overall air quality risk.
+
+## Data sources
+
+- `air-quality-champaign-county.csv` — annual counts of days with less-than-moderate
+  air quality in Champaign County, IL
+- `Dataset_AQI4-5.xlsx` — daily air quality index (AQI) and pollutant readings for
+  cities across India
+
+```{r load-data}
+champaign_data <- read.csv("air-quality-champaign-county.csv")
+india_data <- read_excel("Dataset_AQI4-5.xlsx")
+```
+
+## Data Cleaning
+
+Both datasets required renaming, type conversion, and date parsing before analysis.
+
+```{r clean-data}
+# Rename for clarity
+champaign_data <- champaign_data %>%
+  rename(days_rated_less_than_moderate = Days.Rated.Less.than.Moderate)
+
+india_data <- india_data %>%
+  rename(
+    air_quality = AQI,
+    pm2_5 = PM2.5,
+    pm_10 = PM10
+  )
+
+# Standardize city names; transliterate non-Latin characters so plot labels render
+india_data <- india_data %>%
+  mutate(
+    city = gsub(",", "", City),
+    city = iconv(city, to = "ASCII//TRANSLIT")
+  )
+
+# Parse datetimes: Time is "YYYY-MM-DD HH:MM:SS" (24-hour clock),
+# which ymd_hms() handles exactly
+india_data <- india_data %>%
+  mutate(date = as.Date(ymd_hms(Time, quiet = TRUE)))
+
+stopifnot(
+  "No usable dates parsed from the Time column - inspect it with head(Time)" =
+    sum(!is.na(india_data$date)) > 0
+)
+
+# Standardize column names
+india_data <- india_data %>%
+  clean_names()
+
+# Convert pollutant columns to numeric, treating "-" as missing
+india_data <- india_data %>%
+  mutate(
+    air_quality = as.numeric(ifelse(air_quality == "-", NA, air_quality)),
+    across(c(pm2_5, pm_10, o3, no2, so2, co),
+           ~ suppressWarnings(as.numeric(na_if(as.character(.x), "-"))))
+  )
+```
+
+## Champaign County: Air Quality Over Time
+
+```{r champaign-trend}
+ggplot(champaign_data, aes(x = Year, y = days_rated_less_than_moderate)) +
+  geom_line(col = "orange") +
+  labs(
+    title = "Days with Unhealthy Air Quality in Champaign County",
+    x = "Year", y = "Days Rated Less Than Moderate"
+  ) +
+  theme_minimal()
+```
+
+This graph tracks how air quality has changed in Champaign County over time. The
+trend fluctuates but declines overall, indicating a period of relatively low
+pollution. In more recent years, however, the count of unhealthy air quality days
+appears to be rising again, suggesting a possible reversal and continued
+environmental challenges.
+
+## India: Air Quality by City
+
+```{r india-top-cities}
+top_cities <- india_data %>%
+  arrange(desc(air_quality)) %>%
+  slice_head(n = 20)
+
+ggplot(top_cities, aes(x = reorder(city, air_quality), y = air_quality)) +
+  geom_col(fill = "orange") +
+  coord_flip() +
+  labs(title = "Air Quality in India by City", x = "City", y = "Air Quality Index") +
+  theme_minimal()
+```
+
+Kadri, Mangalore shows the highest reported AQI at nearly 800. Cities such as New
+Delhi and Vapi also report very poor air quality, highlighting the scale of
+pollution challenges across India — a stark contrast to the Champaign County data.
+
+## India: Pollutant Concentration Over Time
+
+```{r india-pollutant-animation}
+clean_data <- india_data %>%
+  select(date, pm2_5, pm_10) %>%
+  pivot_longer(
+    cols = c("pm2_5", "pm_10"),
+    names_to = "pollutant",
+    values_to = "value"
+  ) %>%
+  mutate(pollutant = recode(pollutant, "pm2_5" = "PM2.5", "pm_10" = "PM10")) %>%
+  filter(!is.na(value), !is.na(date))
+
+plot1 <- ggplot(clean_data, aes(x = date, y = value, color = pollutant, group = pollutant)) +
+  geom_line() +
+  labs(
+    title = "Air Quality in India Over Time",
+    x = "Date", y = "Pollutant Concentration", color = "Pollutant"
+  ) +
+  theme_minimal() +
+  transition_reveal(date)
+
+animate(plot1)
+```
+
+This animation shows how PM2.5 and PM10 concentrations changed over time. PM2.5
+(particulate matter ≤ 2.5 micrometers) is more dangerous than PM10 (≤ 10
+micrometers) and is linked to more serious health effects. The data shows PM2.5
+concentrations consistently higher than PM10 throughout the period.
+
+## India: Pollutants vs. Air Quality
+
+```{r india-pollutant-regression}
+graph1 <- ggplot(india_data, aes(x = pm2_5, y = air_quality)) +
+  geom_point() +
+  geom_smooth(method = "lm", color = "orange") +
+  labs(title = "Air Quality vs. PM2.5", x = "PM2.5", y = "Air Quality") +
+  theme_minimal()
+
+graph2 <- ggplot(india_data, aes(x = pm_10, y = air_quality)) +
+  geom_point() +
+  geom_smooth(method = "lm", color = "orange") +
+  labs(title = "Air Quality vs. PM10", x = "PM10", y = "Air Quality") +
+  theme_minimal()
+
+graph1 + graph2
+```
+
+Both plots show an outlier corresponding to Kadri. PM2.5 has a tighter linear
+relationship with air quality than PM10, suggesting it's a stronger indicator of
+air quality problems.
+
+## Comparing India and Champaign County
+
+```{r comparison}
+india_pm25 <- india_data %>%
+  filter(!is.na(pm2_5), !is.na(date)) %>%
+  mutate(year = lubridate::year(date)) %>%
+  group_by(year) %>%
+  summarise(mean_pm2_5 = mean(pm2_5, na.rm = TRUE))
+
+champaign_pm25 <- champaign_data %>%
+  rename(year = Year, champaign_days = days_rated_less_than_moderate) %>%
+  select(year, champaign_days)
+
+both_data <- full_join(india_pm25, champaign_pm25, by = "year") %>%
+  pivot_longer(
+    cols = c(mean_pm2_5, champaign_days),
+    names_to = "region",
+    values_to = "value"
+  ) %>%
+  mutate(region = recode(region,
+    "mean_pm2_5" = "India (Mean PM2.5)",
+    "champaign_days" = "Champaign County (Unhealthy Air Quality Days)"
+  ))
+
+ggplot(both_data, aes(x = year, y = value, color = region)) +
+  geom_line() +
+  geom_point() +
+  labs(
+    title = "Air Quality Trends: India vs. Champaign County",
+    x = "Year",
+    y = "PM2.5 / Unhealthy Air Quality Days",
+    color = "Region"
+  ) +
+  theme_minimal()
+```
+
+This final graph brings both locations together. India's air quality index is
+consistently worse than Champaign County's, and the sharper peaks in India point
+to persistent, ongoing air quality challenges. While Illinois fares better by
+comparison, the trend still underscores the importance of monitoring and
+addressing environmental impact in both regions.
+
+## Conclusion
+
+Comparing these two regions highlights how dramatically air quality can vary by
+location, and how pollutant-level data (like PM2.5) can serve as a leading
+indicator of broader air quality risk. Although Champaign County's air quality
+is far better than that of many Indian cities, the recent uptick in unhealthy air
+quality days is a reminder that environmental conditions can shift. Continued
+monitoring is reasonable in both regions. 
+
+---
